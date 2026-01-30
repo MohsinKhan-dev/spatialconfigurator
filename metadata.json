@@ -1,0 +1,4 @@
+{
+  "name": "SpatialConfigurator",
+  "description": "A high-performance, deterministic 3D configurator for constrained spatial placement with collision detection and rule-based validation."
+}
