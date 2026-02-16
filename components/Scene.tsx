@@ -1,10 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, Suspense, memo } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { 
-  OrbitControls, 
-  Grid, 
-  TransformControls, 
-  ContactShadows, 
+import {
+  OrbitControls,
+  Grid,
+  TransformControls,
+  ContactShadows,
   Environment,
   Stats,
   Gltf,
@@ -16,6 +16,15 @@ import { resolveConstraint } from '../services/constraintEngine';
 import { ConfigurableObject, ContainerConfig } from '../types';
 
 // -- Sub-Components --
+
+/** Memoized GLB renderer — prevents re-cloning/re-mounting on parent re-renders */
+const GltfModel = memo<{ url: string; height: number }>(({ url, height }) => (
+  <Suspense fallback={null}>
+    <Center position={[0, height / 2, 0]}>
+      <Gltf src={url} castShadow receiveShadow />
+    </Center>
+  </Suspense>
+));
 
 const ContainerMesh: React.FC<{ config: ContainerConfig }> = ({ config }) => {
   const { width, height, depth } = config.dimensions;
@@ -118,6 +127,37 @@ const GroupedObjectWrapper: React.FC<GroupedObjectWrapperProps> = (props) => {
   const [isDragging, setIsDragging] = useState(false);
   const [transformMode, setTransformMode] = useState<'translate' | 'scale'>('translate');
 
+  // Resolve model URL: use modelUrl (blob) if available, otherwise convert modelData (data URL) to blob URL
+  const [resolvedModelUrl, setResolvedModelUrl] = useState<string | undefined>(object.modelUrl);
+  useEffect(() => {
+    // If we already have a working blob URL, use it
+    if (object.modelUrl) {
+      setResolvedModelUrl(object.modelUrl);
+      return;
+    }
+    // No modelData either — no model to show
+    if (!object.modelData) {
+      setResolvedModelUrl(undefined);
+      return;
+    }
+    // Convert data URL to blob URL using fetch (browser-native, reliable for large files)
+    let revoked = false;
+    let blobUrl: string | undefined;
+    fetch(object.modelData)
+      .then(res => res.blob())
+      .then(blob => {
+        if (!revoked) {
+          blobUrl = URL.createObjectURL(blob);
+          setResolvedModelUrl(blobUrl);
+        }
+      })
+      .catch(() => setResolvedModelUrl(undefined));
+    return () => {
+      revoked = true;
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+    };
+  }, [object.modelUrl, object.modelData]);
+
   // Toggle transform mode with keyboard shortcut when selected
   useEffect(() => {
     if (!props.isSelected) return;
@@ -141,16 +181,14 @@ const GroupedObjectWrapper: React.FC<GroupedObjectWrapperProps> = (props) => {
   const materialColor = object.isValid ? object.color : '#ef4444';
 
   const renderVisuals = () => {
-    if (object.modelUrl) {
-      return (
-        <Center position={[0, height / 2, 0]}>
-           <Gltf
-            src={object.modelUrl}
-            castShadow
-            receiveShadow
-          />
-        </Center>
-      );
+    if (resolvedModelUrl) {
+      return <GltfModel url={resolvedModelUrl} height={height} />;
+    }
+
+    // GLB object whose blob URL is still resolving — render nothing to avoid
+    // a primitive-mesh-to-GLB flash
+    if (object.modelData) {
+      return null;
     }
 
     return (

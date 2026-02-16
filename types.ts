@@ -19,7 +19,8 @@ export interface LibraryItem {
   name: string;
   dimensions: Dimensions;
   color: string;
-  modelUrl?: string; // Optional URL for GLB/GLTF models
+  modelUrl?: string; // Blob URL for rendering (session-only)
+  modelData?: string; // Base64-encoded GLB for persistence
   icon?: any; // For UI rendering
 }
 
@@ -34,7 +35,8 @@ export interface ConfigurableObject {
   color: string;
   isValid: boolean;
   violations?: string[];
-  modelUrl?: string; // If present, renders GLB instead of primitive
+  modelUrl?: string; // Blob URL for rendering (session-only)
+  modelData?: string; // Base64-encoded GLB for persistence
 }
 
 export interface ConstraintResult {
@@ -46,4 +48,10 @@ export interface ConstraintResult {
 export interface DragEventState {
   position: THREE.Vector3;
   rotation: THREE.Euler;
+}
+
+export interface SceneFile {
+  version: string;
+  container: ContainerConfig;
+  objects: Omit<ConfigurableObject, 'isValid' | 'violations' | 'modelUrl'>[];
 }

@@ -24,6 +24,8 @@ A high-performance, deterministic 3D configurator for constrained spatial placem
   - [Collision Detection](#collision-detection)
   - [Container Bounds Validation](#container-bounds-validation)
   - [Wall Snapping](#wall-snapping)
+  - [Scene Persistence](#scene-persistence)
+  - [Scene Export & Import](#scene-export--import)
 - [Configuration](#configuration)
 - [Scripts](#scripts)
 
@@ -65,7 +67,7 @@ npm run dev
 ```
 Spatial Configurator/
 ├── index.html                 # HTML entry point (Tailwind CDN, import maps)
-├── index.tsx                  # React mount point (StrictMode)
+├── index.tsx                  # React mount point (StrictMode, passive event listener patch)
 ├── App.tsx                    # Main UI component (sidebar + canvas + HUD)
 ├── types.ts                   # Shared TypeScript interfaces
 ├── store.ts                   # Zustand state store
@@ -75,6 +77,7 @@ Spatial Configurator/
 ├── vite.config.ts             # Vite dev server & build config
 ├── components/
 │   └── Scene.tsx              # 3D scene rendering (container, objects, controls)
+├── bug-report.md              # Bug report: scene blinking fix for GLB models
 └── services/
     └── constraintEngine.ts    # Spatial constraint resolution pipeline
 ```
@@ -85,7 +88,7 @@ Spatial Configurator/
 
 **File:** `store.ts`
 
-A single Zustand store (`useStore`) holds all application state:
+A single Zustand store (`useStore`) holds all application state. The store is wrapped with Zustand's `persist` middleware to auto-save `objects` and `container` to `localStorage` (key: `spatial-configurator-scene`), so the scene survives page refreshes.
 
 | State | Type | Description |
 |---|---|---|
@@ -105,6 +108,8 @@ A single Zustand store (`useStore`) holds all application state:
 | `selectObject(id)` | Sets the selected object (or `null` to deselect) |
 | `deleteSelected()` | Removes the currently selected object |
 | `resetScene()` | Clears all objects and deselects |
+| `exportScene()` | Returns a `SceneFile` object (version, container, objects) with runtime and non-portable fields stripped |
+| `importScene(data)` | Validates and imports a `SceneFile`, replacing current objects and container. Returns `{ success, error? }` |
 
 **Default library templates:**
 
@@ -163,7 +168,11 @@ Proposed Position/Rotation/Scale
 
 **File:** `components/Scene.tsx`
 
-Built with `@react-three/fiber` and `@react-three/drei`. Contains three main components:
+Built with `@react-three/fiber` and `@react-three/drei`. Contains four main components:
+
+**`GltfModel`** - A `React.memo`-wrapped component that renders GLB models inside a `<Suspense>` boundary. This prevents two issues:
+- **Canvas-level suspension:** Without a local `<Suspense>`, the `<Gltf>` component's loading state propagates up to the Canvas-level boundary, blanking the entire scene. The local `<Suspense fallback={null}>` isolates each GLB's loading so the rest of the scene stays visible.
+- **Unnecessary re-renders:** `React.memo` ensures the component only re-renders when `url` or `height` actually change, preventing the GLB model from being re-cloned/re-mounted on every store update (e.g., when dragging another object).
 
 **`Scene`** - Root component. Creates a `<Canvas>` with shadows, camera at `[8, 8, 8]`, FOV 50, and DPR `[1, 2]`.
 
@@ -188,7 +197,7 @@ Built with `@react-three/fiber` and `@react-three/drei`. Contains three main com
   - Scale mode: snap increment of 0.1, minimum scale clamped to 0.1 per axis
 - `object.scale` is applied to the `<group>` via the `scale` prop, visually resizing the object
 - On every `onChange`, reads current position, rotation, and scale from the group, calls `resolveConstraint()` with scale, and snaps the visual position to the clamped result
-- Renders either a GLB model (via `<Gltf>` + `<Center>`) or a primitive mesh (box/cylinder) depending on `modelUrl`
+- Renders GLB models via the memoized `<GltfModel>` component, or a primitive mesh (box/cylinder) for built-in types. While a GLB's blob URL is still resolving, renders `null` to avoid a primitive-to-model flash.
 - Material turns red with emissive glow when placement is invalid
 - White wireframe outline when selected
 - Click to select (with `stopPropagation` to prevent deselection)
@@ -207,7 +216,10 @@ Responsive layout using Tailwind CSS:
   - **Library grid**: 3-column grid of template buttons. Click to instantiate.
   - **Import GLB button**: Opens file picker (`.glb` only). Uses `GLTFLoader` + `DRACOLoader` to parse the model, computes bounding box, and adds to library.
   - **Properties panel** (when object selected): Shows name, dimensions (W/H/D), position (X/Y/Z), scale inputs (X/Y/Z with min 0.1, max 10, step 0.1), object ID, and a delete button. Includes a hint about G/R keyboard shortcuts for gizmo mode switching.
-  - **Reset Scene button**: Clears all objects.
+  - **Scene Actions**:
+    - **Export Scene**: Downloads the current scene as a `.json` file
+    - **Import Scene**: Opens a file picker to load a previously exported `.json` scene file
+    - **Reset Scene**: Clears all objects
 
 ## Type Definitions
 
@@ -217,10 +229,11 @@ Responsive layout using Tailwind CSS:
 Dimensions        { width, height, depth }
 ContainerConfig   { id, dimensions, gridSize }
 ObjectType        'cube' | 'rack' | 'cylinder' | 'custom'
-LibraryItem       { type, name, dimensions, color, modelUrl?, icon? }
-ConfigurableObject { id, type, name, dimensions, position, rotation, scale, color, isValid, violations?, modelUrl? }
+LibraryItem       { type, name, dimensions, color, modelUrl?, modelData?, icon? }
+ConfigurableObject { id, type, name, dimensions, position, rotation, scale, color, isValid, violations?, modelUrl?, modelData? }
 ConstraintResult  { isValid, clampedPosition, violations }
 DragEventState    { position, rotation }
+SceneFile         { version, container, objects } // Exported objects include modelData but not modelUrl
 ```
 
 - `position` is stored as `[x, y, z]` tuple in the store, converted to `THREE.Vector3` for calculations.
@@ -238,10 +251,11 @@ Three built-in templates (Crate, Rack, Barrel) are available in the sidebar. Cli
 
 Users can import custom `.glb` models via the "Import GLB" button. The system:
 1. Validates the file extension (`.glb` only; `.gltf` is rejected because it requires external resources)
-2. Loads the model using `GLTFLoader` with `DRACOLoader` for compressed mesh support
-3. Computes the bounding box from the scene graph
-4. Creates a new library item with type `'custom'` and the computed dimensions
-5. The model can then be placed like any built-in template
+2. Reads the file as an ArrayBuffer and creates both a blob URL (for Three.js rendering) and a base64 string (`modelData`, for persistence)
+3. Loads the model using `GLTFLoader` with `DRACOLoader` for compressed mesh support
+4. Computes the bounding box from the scene graph
+5. Creates a new library item with type `'custom'`, computed dimensions, `modelUrl` (blob), and `modelData` (base64)
+6. The model can then be placed like any built-in template. GLB data persists across page refreshes and scene export/import via the base64 `modelData` field.
 
 ### Drag & Transform
 
@@ -272,6 +286,27 @@ The AABB of each object is tested against the container bounds. Specific axis vi
 
 Before validation, the object position is automatically clamped so its AABB stays within the container. This prevents objects from being dragged into the void. The clamping accounts for the object's rotated extents and scale.
 
+### Scene Persistence
+
+The scene is automatically saved to `localStorage` on every state change using Zustand's `persist` middleware. Only `objects` and `container` are persisted (not `selectedId` or `library`). On page load, the scene is restored from `localStorage` if data exists, so users never lose their work on refresh.
+
+- Storage key: `spatial-configurator-scene`
+- Persisted fields: `objects`, `container`
+- Blob URLs (`modelUrl`) are stripped before saving since they are session-only. On hydration, blob URLs are recreated from `modelData` (base64) via a custom `merge` function.
+
+### Scene Export & Import
+
+**Export:** Click "Export Scene" in the sidebar to download the current scene as a `scene-<timestamp>.json` file. The exported JSON contains:
+- `version`: Schema version (`"1.0"`)
+- `container`: Container configuration
+- `objects`: All objects with their transforms and `modelData` (base64-encoded GLB for custom models), stripped of runtime fields (`isValid`, `violations`) and session-only fields (`modelUrl` blob URLs)
+
+**Import:** Click "Import Scene" to open a file picker (`.json` only). The file is validated before applying:
+- Must have a `version` string, valid `container`, and an `objects` array
+- Each object must have `id`, `type`, `name`, `dimensions`, `position`, `rotation`, `scale`, and `color`
+- On success, replaces the current scene. On failure, shows an error alert without modifying the scene.
+- For GLB objects, the base64 `modelData` is converted back to a blob URL asynchronously. Each GLB model loads independently inside its own `<Suspense>` boundary, so the rest of the scene remains visible during loading.
+
 ## Configuration
 
 **Container defaults** (in `store.ts`):
@@ -283,6 +318,16 @@ Before validation, the object position is automatically clamped so its AABB stay
 - Dev server: port 3000, host `0.0.0.0`
 - Path alias: `@/` resolves to project root
 - Environment variable: `GEMINI_API_KEY` (for future AI integration)
+
+## Known Issues
+
+- **Custom GLB models revert to primitive shapes on page refresh.** localStorage has a ~5MB quota, which is too small for base64-encoded GLB model data. To avoid `QuotaExceededError` crashes, `modelData` is excluded from localStorage persistence. Object positions, rotations, scales, and dimensions are still saved. **Workaround:** Use **Export Scene** to save a JSON file (which includes full GLB data), then **Import Scene** to restore it after a refresh.
+
+## Resolved Issues
+
+- **Scene blinking after loading saved scenes with GLB models (Fixed).** Importing a scene containing GLB objects caused the entire canvas to blink repeatedly. Root causes: (1) no local `<Suspense>` boundary around `<Gltf>`, so each GLB's loading state blanked the full scene; (2) `<Gltf>` re-rendering on every store update due to missing memoization; (3) primitive-mesh-to-GLB flash during async blob URL resolution. Fixed by introducing a `React.memo`-wrapped `GltfModel` component with a local `<Suspense fallback={null}>`, and rendering `null` for GLB objects while their blob URL is resolving. See `bug-report.md` for full details.
+
+- **Non-passive event listener warnings in browser console (Fixed).** Three.js's `OrbitControls` (via `three-stdlib`) registers `wheel` event listeners without `{ passive: true }`, triggering `[Violation] Added non-passive event listener` warnings. Fixed by patching `EventTarget.prototype.addEventListener` in `index.tsx` to default scroll-blocking events (`wheel`, `mousewheel`, `touchstart`, `touchmove`) to passive when no options are specified.
 
 ## Scripts
 

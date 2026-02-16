@@ -4,16 +4,18 @@ import { useStore } from './store';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
-import { 
-  Box, 
-  Layers, 
-  AlertTriangle, 
-  CheckCircle, 
-  RotateCcw, 
-  Trash2, 
+import {
+  Box,
+  Layers,
+  AlertTriangle,
+  CheckCircle,
+  RotateCcw,
+  Trash2,
   MousePointer2,
   Upload,
-  Package
+  Package,
+  Download,
+  FolderOpen
 } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -25,10 +27,13 @@ const App: React.FC = () => {
     selectedId,
     deleteSelected,
     resetScene,
-    updateObjectScale
+    updateObjectScale,
+    exportScene,
+    importScene
   } = useStore();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const sceneInputRef = useRef<HTMLInputElement>(null);
   const selectedObject = objects.find(o => o.id === selectedId);
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -44,49 +49,84 @@ const App: React.FC = () => {
       return;
     }
 
-    const url = URL.createObjectURL(file);
-    const loader = new GLTFLoader();
-    
-    // Add Draco support to handle compressed meshes commonly found in optimization pipelines
-    const dracoLoader = new DRACOLoader();
-    // Use a reliable CDN for the decoder
-    dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
-    loader.setDRACOLoader(dracoLoader);
+    // Create blob URL immediately for Three.js rendering (synchronous, reliable)
+    const blobUrl = URL.createObjectURL(file);
 
-    loader.load(url, (gltf) => {
-      // Calculate Bounding Box
-      const box = new THREE.Box3().setFromObject(gltf.scene);
-      const size = new THREE.Vector3();
-      box.getSize(size);
+    // Also read as data URL for persistence (browser-native base64, handles large files)
+    const reader = new FileReader();
+    reader.onload = (readerEvent) => {
+      const modelData = readerEvent.target?.result as string;
 
-      // Check if size is valid (sometimes empty scenes return 0)
-      if (size.lengthSq() < 0.0001) {
-        // Fallback for empty or point objects
-        size.set(1, 1, 1);
-      }
+      const loader = new GLTFLoader();
+      const dracoLoader = new DRACOLoader();
+      dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
+      loader.setDRACOLoader(dracoLoader);
 
-      // Create new Library Item
-      const name = file.name.replace('.glb', '').replace('.gltf', '');
-      
-      addLibraryItem({
-        type: 'custom',
-        name: name,
-        dimensions: { width: size.x, height: size.y, depth: size.z },
-        color: '#ffffff',
-        modelUrl: url
+      loader.load(blobUrl, (gltf) => {
+        const box = new THREE.Box3().setFromObject(gltf.scene);
+        const size = new THREE.Vector3();
+        box.getSize(size);
+
+        if (size.lengthSq() < 0.0001) {
+          size.set(1, 1, 1);
+        }
+
+        const name = file.name.replace('.glb', '').replace('.gltf', '');
+
+        addLibraryItem({
+          type: 'custom',
+          name: name,
+          dimensions: { width: size.x, height: size.y, depth: size.z },
+          color: '#ffffff',
+          modelUrl: blobUrl,
+          modelData
+        });
+
+        dracoLoader.dispose();
+      }, undefined, (error) => {
+        console.error('An error happened loading the GLB', error);
+        alert('Failed to load GLB file. It may be corrupt or require external resources not embedded in the file.');
+        URL.revokeObjectURL(blobUrl);
+        dracoLoader.dispose();
       });
-      
-      dracoLoader.dispose();
-
-    }, undefined, (error) => {
-      console.error('An error happened loading the GLB', error);
-      alert('Failed to load GLB file. It may be corrupt or require external resources not embedded in the file.');
-      URL.revokeObjectURL(url); // Clean up memory on failure
-      dracoLoader.dispose();
-    });
+    };
+    reader.readAsDataURL(file);
 
     // Reset input
     if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleExportScene = () => {
+    const sceneData = exportScene();
+    const json = JSON.stringify(sceneData, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `scene-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportScene = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = JSON.parse(e.target?.result as string);
+        const result = importScene(data);
+        if (!result.success) {
+          alert(result.error || 'Failed to import scene.');
+        }
+      } catch {
+        alert('Invalid JSON file. Please select a valid scene file.');
+      }
+    };
+    reader.readAsText(file);
+
+    if (sceneInputRef.current) sceneInputRef.current.value = '';
   };
 
   // Helper to get icon based on type
@@ -259,8 +299,29 @@ const App: React.FC = () => {
         )}
 
         {/* Scene Actions */}
-        <div className="mt-auto pt-4 border-t border-slate-700">
-          <button 
+        <div className="mt-auto pt-4 border-t border-slate-700 space-y-2">
+          <button
+            onClick={handleExportScene}
+            className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-600 flex items-center justify-center gap-2 transition-colors text-sm font-medium"
+          >
+            <Download size={16} /> Export Scene
+          </button>
+
+          <input
+            type="file"
+            accept=".json"
+            ref={sceneInputRef}
+            className="hidden"
+            onChange={handleImportScene}
+          />
+          <button
+            onClick={() => sceneInputRef.current?.click()}
+            className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-600 flex items-center justify-center gap-2 transition-colors text-sm font-medium"
+          >
+            <FolderOpen size={16} /> Import Scene
+          </button>
+
+          <button
             onClick={resetScene}
             className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-600 flex items-center justify-center gap-2 transition-colors text-sm font-medium"
           >

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import { ConfigurableObject, ContainerConfig, LibraryItem } from './types';
+import { persist } from 'zustand/middleware';
+import { ConfigurableObject, ContainerConfig, LibraryItem, SceneFile } from './types';
 import { v4 as uuidv4 } from 'uuid';
 
 interface AppState {
@@ -7,7 +8,7 @@ interface AppState {
   objects: ConfigurableObject[];
   library: LibraryItem[];
   selectedId: string | null;
-  
+
   // Actions
   addLibraryItem: (item: LibraryItem) => void;
   addObject: (templateName: string) => void;
@@ -16,6 +17,8 @@ interface AppState {
   selectObject: (id: string | null) => void;
   deleteSelected: () => void;
   resetScene: () => void;
+  exportScene: () => SceneFile;
+  importScene: (data: unknown) => { success: boolean; error?: string };
 }
 
 const DEFAULT_CONTAINER: ContainerConfig = {
@@ -59,67 +62,126 @@ const INITIAL_OBJECTS: ConfigurableObject[] = [
   }
 ];
 
-export const useStore = create<AppState>((set, get) => ({
-  container: DEFAULT_CONTAINER,
-  objects: INITIAL_OBJECTS,
-  library: DEFAULT_LIBRARY,
-  selectedId: null,
+const validateSceneFile = (data: any): data is SceneFile => {
+  if (!data || typeof data !== 'object') return false;
+  if (typeof data.version !== 'string') return false;
+  if (!data.container || !data.container.dimensions) return false;
+  if (!Array.isArray(data.objects)) return false;
 
-  addLibraryItem: (item) => {
-    set((state) => ({ library: [...state.library, item] }));
-  },
+  for (const obj of data.objects) {
+    if (!obj.id || !obj.type || !obj.name) return false;
+    if (!obj.dimensions || typeof obj.dimensions.width !== 'number') return false;
+    if (!Array.isArray(obj.position) || obj.position.length !== 3) return false;
+    if (!Array.isArray(obj.rotation) || obj.rotation.length !== 3) return false;
+    if (!Array.isArray(obj.scale) || obj.scale.length !== 3) return false;
+    if (typeof obj.color !== 'string') return false;
+  }
 
-  addObject: (templateName) => {
-    const { library } = get();
-    const template = library.find(item => item.name === templateName);
-    
-    if (!template) {
-      console.error(`Template ${templateName} not found`);
-      return;
-    }
+  return true;
+};
 
-    const newObj: ConfigurableObject = {
-      id: uuidv4(),
-      type: template.type,
-      name: template.name,
-      dimensions: { ...template.dimensions },
-      position: [0, 0, 0],
-      rotation: [0, 0, 0],
-      scale: [1, 1, 1],
-      color: template.color,
-      isValid: true,
-      modelUrl: template.modelUrl
-    };
-
-    set((state) => ({ objects: [...state.objects, newObj], selectedId: newObj.id }));
-  },
-
-  updateObjectTransform: (id, pos, rot, scale, isValid, violations) => {
-    set((state) => ({
-      objects: state.objects.map((obj) =>
-        obj.id === id
-          ? { ...obj, position: pos, rotation: rot, scale, isValid, violations }
-          : obj
-      ),
-    }));
-  },
-
-  updateObjectScale: (id, scale) => {
-    set((state) => ({
-      objects: state.objects.map((obj) =>
-        obj.id === id ? { ...obj, scale } : obj
-      ),
-    }));
-  },
-
-  selectObject: (id) => set({ selectedId: id }),
-
-  deleteSelected: () => {
-    set((state) => ({
-      objects: state.objects.filter((o) => o.id !== state.selectedId),
+export const useStore = create<AppState>()(
+  persist(
+    (set, get) => ({
+      container: DEFAULT_CONTAINER,
+      objects: INITIAL_OBJECTS,
+      library: DEFAULT_LIBRARY,
       selectedId: null,
-    }));
-  },
-  
-  resetScene: () => set({ objects: [], selectedId: null }),
-}));
+
+      addLibraryItem: (item) => {
+        set((state) => ({ library: [...state.library, item] }));
+      },
+
+      addObject: (templateName) => {
+        const { library } = get();
+        const template = library.find(item => item.name === templateName);
+
+        if (!template) {
+          console.error(`Template ${templateName} not found`);
+          return;
+        }
+
+        const newObj: ConfigurableObject = {
+          id: uuidv4(),
+          type: template.type,
+          name: template.name,
+          dimensions: { ...template.dimensions },
+          position: [0, 0, 0],
+          rotation: [0, 0, 0],
+          scale: [1, 1, 1],
+          color: template.color,
+          isValid: true,
+          modelUrl: template.modelUrl,
+          modelData: template.modelData
+        };
+
+        set((state) => ({ objects: [...state.objects, newObj], selectedId: newObj.id }));
+      },
+
+      updateObjectTransform: (id, pos, rot, scale, isValid, violations) => {
+        set((state) => ({
+          objects: state.objects.map((obj) =>
+            obj.id === id
+              ? { ...obj, position: pos, rotation: rot, scale, isValid, violations }
+              : obj
+          ),
+        }));
+      },
+
+      updateObjectScale: (id, scale) => {
+        set((state) => ({
+          objects: state.objects.map((obj) =>
+            obj.id === id ? { ...obj, scale } : obj
+          ),
+        }));
+      },
+
+      selectObject: (id) => set({ selectedId: id }),
+
+      deleteSelected: () => {
+        set((state) => ({
+          objects: state.objects.filter((o) => o.id !== state.selectedId),
+          selectedId: null,
+        }));
+      },
+
+      resetScene: () => set({ objects: [], selectedId: null }),
+
+      exportScene: () => {
+        const { container, objects } = get();
+        // Strip runtime fields and blob URLs. Keep modelData (data URL) for GLB persistence.
+        const exportObjects = objects.map(({ isValid, violations, modelUrl, ...rest }) => rest);
+        return {
+          version: '1.0',
+          container,
+          objects: exportObjects,
+        };
+      },
+
+      importScene: (data: unknown) => {
+        if (!validateSceneFile(data)) {
+          return { success: false, error: 'Invalid scene file format.' };
+        }
+
+        // Don't set modelUrl here — Scene.tsx will resolve it from modelData
+        const objects: ConfigurableObject[] = data.objects.map((obj) => ({
+          ...obj,
+          isValid: true,
+          violations: [],
+        }));
+
+        set({ objects, container: data.container, selectedId: null });
+        return { success: true };
+      },
+    }),
+    {
+      name: 'spatial-configurator-scene',
+      partialize: (state) => ({
+        // Strip blob URLs and modelData (too large for localStorage's ~5MB limit).
+        // modelData is only used for JSON file export/import.
+        objects: state.objects.map(({ modelUrl, modelData, ...rest }) => rest),
+        container: state.container,
+      }),
+    }
+  )
+);
