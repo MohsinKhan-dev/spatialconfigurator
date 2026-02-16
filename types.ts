@@ -30,6 +30,7 @@ export interface ConfigurableObject {
   dimensions: Dimensions;
   position: [number, number, number];
   rotation: [number, number, number]; // Euler [x, y, z]
+  scale: [number, number, number];
   color: string;
   isValid: boolean;
   violations?: string[];

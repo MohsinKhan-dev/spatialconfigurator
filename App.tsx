@@ -17,14 +17,15 @@ import {
 } from 'lucide-react';
 
 const App: React.FC = () => {
-  const { 
-    objects, 
+  const {
+    objects,
     library,
-    addObject, 
+    addObject,
     addLibraryItem,
-    selectedId, 
-    deleteSelected, 
-    resetScene 
+    selectedId,
+    deleteSelected,
+    resetScene,
+    updateObjectScale
   } = useStore();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -214,7 +215,33 @@ const App: React.FC = () => {
                     Z: {selectedObject.position[2].toFixed(2)}
                  </div>
               </div>
-              
+
+              <div className="pt-2 border-t border-slate-700">
+                 <label className="text-xs text-slate-400 block mb-2">Scale</label>
+                 <div className="grid grid-cols-3 gap-2">
+                   {(['X', 'Y', 'Z'] as const).map((axis, i) => (
+                     <div key={axis}>
+                       <label className="text-[10px] text-slate-500 block mb-1">{axis}</label>
+                       <input
+                         type="number"
+                         min="0.1"
+                         max="10"
+                         step="0.1"
+                         value={selectedObject.scale[i]}
+                         onChange={(e) => {
+                           const val = Math.max(0.1, parseFloat(e.target.value) || 0.1);
+                           const newScale: [number, number, number] = [...selectedObject.scale];
+                           newScale[i] = val;
+                           updateObjectScale(selectedObject.id, newScale);
+                         }}
+                         className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-1 text-xs font-mono text-slate-200 focus:border-blue-500 focus:outline-none"
+                       />
+                     </div>
+                   ))}
+                 </div>
+                 <p className="text-[10px] text-slate-500 mt-1">Press G (translate) / R (scale) to switch gizmo mode</p>
+              </div>
+
               <div className="pt-2">
                  <button 
                    onClick={deleteSelected}

@@ -11,7 +11,8 @@ interface AppState {
   // Actions
   addLibraryItem: (item: LibraryItem) => void;
   addObject: (templateName: string) => void;
-  updateObjectTransform: (id: string, pos: [number, number, number], rot: [number, number, number], isValid: boolean, violations: string[]) => void;
+  updateObjectTransform: (id: string, pos: [number, number, number], rot: [number, number, number], scale: [number, number, number], isValid: boolean, violations: string[]) => void;
+  updateObjectScale: (id: string, scale: [number, number, number]) => void;
   selectObject: (id: string | null) => void;
   deleteSelected: () => void;
   resetScene: () => void;
@@ -52,6 +53,7 @@ const INITIAL_OBJECTS: ConfigurableObject[] = [
     dimensions: { width: 1.2, height: 2.2, depth: 0.6 },
     position: [-3, 0, -3],
     rotation: [0, 0, 0],
+    scale: [1, 1, 1],
     color: '#3b82f6',
     isValid: true,
   }
@@ -83,6 +85,7 @@ export const useStore = create<AppState>((set, get) => ({
       dimensions: { ...template.dimensions },
       position: [0, 0, 0],
       rotation: [0, 0, 0],
+      scale: [1, 1, 1],
       color: template.color,
       isValid: true,
       modelUrl: template.modelUrl
@@ -91,12 +94,20 @@ export const useStore = create<AppState>((set, get) => ({
     set((state) => ({ objects: [...state.objects, newObj], selectedId: newObj.id }));
   },
 
-  updateObjectTransform: (id, pos, rot, isValid, violations) => {
+  updateObjectTransform: (id, pos, rot, scale, isValid, violations) => {
     set((state) => ({
       objects: state.objects.map((obj) =>
         obj.id === id
-          ? { ...obj, position: pos, rotation: rot, isValid, violations }
+          ? { ...obj, position: pos, rotation: rot, scale, isValid, violations }
           : obj
+      ),
+    }));
+  },
+
+  updateObjectScale: (id, scale) => {
+    set((state) => ({
+      objects: state.objects.map((obj) =>
+        obj.id === id ? { ...obj, scale } : obj
       ),
     }));
   },

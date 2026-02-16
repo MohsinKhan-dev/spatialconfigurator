@@ -20,26 +20,23 @@ export const getObjectBoundingBox = (
   dims: Dimensions,
   position: THREE.Vector3,
   rotation: THREE.Euler,
-  target: THREE.Box3
+  target: THREE.Box3,
+  scale: THREE.Vector3 = new THREE.Vector3(1, 1, 1)
 ): THREE.Box3 => {
-  // 1. Define local AABB centered at origin (assuming pivot is center for simplicity in this MVP)
-  // For bottom-center pivot, y would be 0 to height.
-  // We'll use center pivot for simplicity, or adjust:
-  // Pivot: Bottom-Center -> y ranges from 0 to height. x/z from -w/2 to w/2
-  const halfW = dims.width / 2;
-  const halfD = dims.depth / 2;
-  
+  // Apply scale to dimensions
+  const scaledW = dims.width * scale.x;
+  const scaledH = dims.height * scale.y;
+  const scaledD = dims.depth * scale.z;
+
+  const halfW = scaledW / 2;
+  const halfD = scaledD / 2;
+
   // Construct local geometry box (Pivot at bottom-center)
   const min = new THREE.Vector3(-halfW, 0, -halfD);
-  const max = new THREE.Vector3(halfW, dims.height, halfD);
-  
-  // 2. Create OBB-like AABB by transforming the 8 corners
-  // Since Three.js Box3 doesn't support rotation natively without OBB, 
-  // we project the rotated corners to a new axis-aligned box (AABB).
-  // This is a "loose" fit but ensures the object is fully contained.
-  
+  const max = new THREE.Vector3(halfW, scaledH, halfD);
+
   target.makeEmpty();
-  
+
   const corners = [
     new THREE.Vector3(min.x, min.y, min.z),
     new THREE.Vector3(min.x, min.y, max.z),
@@ -111,7 +108,8 @@ export const checkCollisions = (
     // Convert other object to Box3
     const pos = new THREE.Vector3(...obj.position);
     const rot = new THREE.Euler(...obj.rotation);
-    getObjectBoundingBox(obj.dimensions, pos, rot, HELPER_BOX_B);
+    const scl = new THREE.Vector3(...obj.scale);
+    getObjectBoundingBox(obj.dimensions, pos, rot, HELPER_BOX_B, scl);
 
     if (targetBox.intersectsBox(HELPER_BOX_B)) {
       collidingIds.push(obj.id);
@@ -131,14 +129,15 @@ export const clampToContainer = (
   dims: Dimensions,
   position: THREE.Vector3,
   rotation: THREE.Euler,
-  container: ContainerConfig
+  container: ContainerConfig,
+  scale: THREE.Vector3 = new THREE.Vector3(1, 1, 1)
 ): THREE.Vector3 => {
   const clamped = position.clone();
-  
+
   // Calculate extent of the object in its current rotation relative to its center
   // We need the half-extents of the AABB
   HELPER_BOX_A.makeEmpty();
-  getObjectBoundingBox(dims, new THREE.Vector3(0,0,0), rotation, HELPER_BOX_A);
+  getObjectBoundingBox(dims, new THREE.Vector3(0,0,0), rotation, HELPER_BOX_A, scale);
   
   const halfX = (HELPER_BOX_A.max.x - HELPER_BOX_A.min.x) / 2;
   const halfZ = (HELPER_BOX_A.max.z - HELPER_BOX_A.min.z) / 2;
@@ -175,15 +174,14 @@ export const resolveConstraint = (
   proposedPos: THREE.Vector3,
   proposedRot: THREE.Euler,
   container: ContainerConfig,
-  others: ConfigurableObject[]
+  others: ConfigurableObject[],
+  scale: THREE.Vector3 = new THREE.Vector3(1, 1, 1)
 ) => {
   // 1. Clamp to Walls (Auto-Snap)
-  // We automatically clamp position to keep it inside the world, 
-  // preventing the user from dragging it out into the void.
-  const clampedPos = clampToContainer(dims, proposedPos, proposedRot, container);
+  const clampedPos = clampToContainer(dims, proposedPos, proposedRot, container, scale);
 
   // 2. Generate AABB for the clamped position
-  const targetBox = getObjectBoundingBox(dims, clampedPos, proposedRot, HELPER_BOX_A);
+  const targetBox = getObjectBoundingBox(dims, clampedPos, proposedRot, HELPER_BOX_A, scale);
 
   // 3. Check specific bounds violations (double check after clamp, though clamp handles most)
   // We keep this to catch height violations or impossible sizes.
