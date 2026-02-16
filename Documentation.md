@@ -20,6 +20,7 @@ A high-performance, deterministic 3D configurator for constrained spatial placem
   - [Object Library](#object-library)
   - [GLB Model Import](#glb-model-import)
   - [Drag & Transform](#drag--transform)
+  - [Scale / Resize](#scale--resize)
   - [Collision Detection](#collision-detection)
   - [Container Bounds Validation](#container-bounds-validation)
   - [Wall Snapping](#wall-snapping)
@@ -98,8 +99,9 @@ A single Zustand store (`useStore`) holds all application state:
 | Action | Description |
 |---|---|
 | `addLibraryItem(item)` | Adds a new template to the library (used for GLB imports) |
-| `addObject(templateName)` | Instantiates an object from a library template at origin `[0, 0, 0]` and selects it |
-| `updateObjectTransform(id, pos, rot, isValid, violations)` | Updates an object's position, rotation, and validation state |
+| `addObject(templateName)` | Instantiates an object from a library template at origin `[0, 0, 0]` with scale `[1, 1, 1]` and selects it |
+| `updateObjectTransform(id, pos, rot, scale, isValid, violations)` | Updates an object's position, rotation, scale, and validation state |
+| `updateObjectScale(id, scale)` | Updates only the scale of an object (used by sidebar inputs) |
 | `selectObject(id)` | Sets the selected object (or `null` to deselect) |
 | `deleteSelected()` | Removes the currently selected object |
 | `resetScene()` | Clears all objects and deselects |
@@ -121,16 +123,16 @@ A stateless, high-performance pipeline that validates object placement. All calc
 **Pipeline (`resolveConstraint`):**
 
 ```
-Proposed Position/Rotation
+Proposed Position/Rotation/Scale
         │
         ▼
 ┌─────────────────────┐
-│  clampToContainer() │  Wall-snap: clamp position so AABB stays inside bounds
+│  clampToContainer() │  Wall-snap: clamp position so scaled AABB stays inside bounds
 └────────┬────────────┘
          │
          ▼
 ┌─────────────────────────┐
-│  getObjectBoundingBox() │  Compute world-space AABB from dimensions + rotation
+│  getObjectBoundingBox() │  Compute world-space AABB from dimensions × scale + rotation
 └────────┬────────────────┘
          │
          ▼
@@ -151,11 +153,11 @@ Proposed Position/Rotation
 
 | Function | Purpose |
 |---|---|
-| `getObjectBoundingBox(dims, position, rotation, target)` | Computes world-space AABB by transforming the 8 corners of the local bounding box through a composed matrix (position + rotation). Uses bottom-center pivot. |
+| `getObjectBoundingBox(dims, position, rotation, target, scale?)` | Computes world-space AABB by multiplying dimensions by scale, then transforming the 8 corners through a composed matrix (position + rotation). Uses bottom-center pivot. Scale defaults to `(1,1,1)`. |
 | `checkContainerBounds(objectBox, container)` | Tests if the AABB is fully contained within the container. Returns specific violations: "Exceeds Width", "Exceeds Height", "Exceeds Depth". |
-| `checkCollisions(targetId, targetBox, others)` | Iterates all other objects, computes their AABBs, and tests intersection. Returns colliding object IDs. |
-| `clampToContainer(dims, position, rotation, container)` | Calculates the AABB half-extents at origin for the given rotation, then clamps X, Y, Z to keep the object inside. Y is floor-snapped (min 0). |
-| `resolveConstraint(id, dims, pos, rot, container, others)` | Main entry point. Runs the full pipeline and returns `{ isValid, clampedPosition, violations }`. |
+| `checkCollisions(targetId, targetBox, others)` | Iterates all other objects, computes their scaled AABBs, and tests intersection. Returns colliding object IDs. |
+| `clampToContainer(dims, position, rotation, container, scale?)` | Calculates the scaled AABB half-extents at origin for the given rotation, then clamps X, Y, Z to keep the object inside. Y is floor-snapped (min 0). Scale defaults to `(1,1,1)`. |
+| `resolveConstraint(id, dims, pos, rot, container, others, scale?)` | Main entry point. Passes scale through the full pipeline and returns `{ isValid, clampedPosition, violations }`. Scale defaults to `(1,1,1)`. |
 
 ### 3D Scene
 
@@ -180,8 +182,12 @@ Built with `@react-three/fiber` and `@react-three/drei`. Contains three main com
 - An infinite grid with cell size matching `gridSize` (0.5m) and 1m section lines
 
 **`GroupedObjectWrapper`** - Per-object component handling:
-- `TransformControls` in translate mode with grid snapping (`translationSnap = gridSize`)
-- On every `onChange`, calls `resolveConstraint()` and snaps the visual position to the clamped result
+- `TransformControls` with switchable mode: **translate** (default) or **scale**
+  - Press **G** to switch to translate mode, **R** to switch to scale mode
+  - Translate mode: grid snapping (`translationSnap = gridSize`)
+  - Scale mode: snap increment of 0.1, minimum scale clamped to 0.1 per axis
+- `object.scale` is applied to the `<group>` via the `scale` prop, visually resizing the object
+- On every `onChange`, reads current position, rotation, and scale from the group, calls `resolveConstraint()` with scale, and snaps the visual position to the clamped result
 - Renders either a GLB model (via `<Gltf>` + `<Center>`) or a primitive mesh (box/cylinder) depending on `modelUrl`
 - Material turns red with emissive glow when placement is invalid
 - White wireframe outline when selected
@@ -200,7 +206,7 @@ Responsive layout using Tailwind CSS:
 - **Sidebar** (right/bottom, 320px on desktop): Contains:
   - **Library grid**: 3-column grid of template buttons. Click to instantiate.
   - **Import GLB button**: Opens file picker (`.glb` only). Uses `GLTFLoader` + `DRACOLoader` to parse the model, computes bounding box, and adds to library.
-  - **Properties panel** (when object selected): Shows name, dimensions (W/H/D), position (X/Y/Z), object ID, and a delete button.
+  - **Properties panel** (when object selected): Shows name, dimensions (W/H/D), position (X/Y/Z), scale inputs (X/Y/Z with min 0.1, max 10, step 0.1), object ID, and a delete button. Includes a hint about G/R keyboard shortcuts for gizmo mode switching.
   - **Reset Scene button**: Clears all objects.
 
 ## Type Definitions
@@ -212,13 +218,14 @@ Dimensions        { width, height, depth }
 ContainerConfig   { id, dimensions, gridSize }
 ObjectType        'cube' | 'rack' | 'cylinder' | 'custom'
 LibraryItem       { type, name, dimensions, color, modelUrl?, icon? }
-ConfigurableObject { id, type, name, dimensions, position, rotation, color, isValid, violations?, modelUrl? }
+ConfigurableObject { id, type, name, dimensions, position, rotation, scale, color, isValid, violations?, modelUrl? }
 ConstraintResult  { isValid, clampedPosition, violations }
 DragEventState    { position, rotation }
 ```
 
 - `position` is stored as `[x, y, z]` tuple in the store, converted to `THREE.Vector3` for calculations.
 - `rotation` is stored as `[x, y, z]` Euler angles in the store.
+- `scale` is stored as `[x, y, z]` tuple, defaulting to `[1, 1, 1]`. Scale is applied to dimensions in the constraint engine and to the visual group in the scene.
 - Pivot point for all objects is **bottom-center** (Y ranges from 0 to height).
 
 ## Features
@@ -238,7 +245,20 @@ Users can import custom `.glb` models via the "Import GLB" button. The system:
 
 ### Drag & Transform
 
-Selected objects show `TransformControls` gizmos for translation. Movement snaps to the container's grid size (0.5m by default). Rotation snaps to 90-degree increments.
+Selected objects show `TransformControls` gizmos. The gizmo mode can be switched with keyboard shortcuts:
+- **G** — Translate mode (default). Movement snaps to the container's grid size (0.5m by default).
+- **R** — Scale mode. Scale snaps in increments of 0.1.
+
+Rotation snaps to 90-degree increments.
+
+### Scale / Resize
+
+Objects can be scaled per-axis (X, Y, Z) via two methods:
+
+1. **Sidebar inputs**: Numeric fields in the Properties panel (min 0.1, max 10, step 0.1). Changes are applied immediately via `updateObjectScale()`.
+2. **3D gizmo**: Press **R** to switch `TransformControls` to scale mode, then drag the axis handles. Scale is clamped to a minimum of 0.1 per axis.
+
+Scale is factored into the constraint engine — bounding boxes, wall snapping, and collision detection all use `dimensions × scale` for their calculations.
 
 ### Collision Detection
 
@@ -250,7 +270,7 @@ The AABB of each object is tested against the container bounds. Specific axis vi
 
 ### Wall Snapping
 
-Before validation, the object position is automatically clamped so its AABB stays within the container. This prevents objects from being dragged into the void. The clamping accounts for the object's rotated extents.
+Before validation, the object position is automatically clamped so its AABB stays within the container. This prevents objects from being dragged into the void. The clamping accounts for the object's rotated extents and scale.
 
 ## Configuration
 
